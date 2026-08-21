@@ -3,7 +3,6 @@ import {
     ConfigurationParameters,
     CertificationsApi,
     IAIRecommendationsApi,
-    IdentitiesApi,
     IdentityHistoryApi,
     Paginator,
 } from 'sailpoint-api-client'
@@ -28,8 +27,6 @@ const DECISION_BATCH_SIZE = 50
 const DEFAULT_AI_RECOMMENDATION_BATCH_SIZE = 50
 
 const IDENTITY_CERTIFIED_EVENT_TYPE = 'IdentityCertified'
-const ATTRIBUTES_CHANGED_EVENT_TYPE = 'AttributesChanged'
-
 type AutoApprovalReason = 'IRREVOCABLE_ROLE' | 'PREVIOUSLY_APPROVED' | 'AI_RECOMMENDED'
 
 type AccessKey = string
@@ -37,23 +34,17 @@ type AccessKey = string
 interface PreviousCertification {
     id: string
     signedAt: Date
-    campaignName?: string
-    source: 'ANNUAL' | 'MOBILITY_MINI'
-    mobilityAt?: Date
 }
 
 interface PreviousApprovedAccess {
     certificationId: string
     signedAt: Date
-    campaignName?: string
-    source: 'ANNUAL' | 'MOBILITY_MINI'
-    mobilityAt?: Date
     keys: Set<AccessKey>
 }
 
 /**
- * `eligible` is false when the certification exists but cannot feed the business rules (unknown
- * population, too old, mobility since). Its revocations still apply to AI approvals.
+ * `eligible` is false when the certification exists but is too old to feed the previous-approval rule.
+ * Its revocations still apply to AI approvals.
  */
 interface PreviousCertificationLookup {
     certification: PreviousCertification
@@ -63,14 +54,6 @@ interface PreviousCertificationLookup {
 interface PreviousCertificationDecisions {
     approved: Set<AccessKey>
     revoked: Set<AccessKey>
-}
-
-type Population = 'EMPLOYEE' | 'CONTRACTOR'
-
-interface PopulationConfig {
-    population: Population
-    maxPreviousCertificationAgeMonths: number
-    mobilityIdentityAttributes: Set<string>
 }
 
 interface ExecutionLog {
@@ -87,14 +70,12 @@ interface CandidateDecision {
     decision: CertificationDecision
     comments: string
     reason: AutoApprovalReason
-    previousSource?: 'ANNUAL' | 'MOBILITY_MINI'
 }
 
 interface PreApprovalTotals {
     itemsProcessed: number
     approvedFromPreviousCampaign: number
-    approvedAsMandatory: number
-    approvedFromMobilityMiniCampaign: number
+    approvedAsIrrevocableRole: number
     approvedFromAiRecommendation: number
 }
 
@@ -112,13 +93,6 @@ interface CertificationResult {
     items: CandidateDecision[]
     errors: FailedDecision[]
     skippedBecause?: string
-}
-
-interface MobilityChange {
-    attribute: string
-    previousValue?: string
-    newValue?: string
-    changedAt?: string
 }
 
 function accessKey(type?: string, id?: string): AccessKey | undefined {
@@ -141,18 +115,18 @@ function getAccessRef(item: AccessReviewItem): { type?: string; id?: string; nam
         (summary?.entitlement
             ? DtoType.Entitlement
             : summary?.accessProfile
-              ? DtoType.AccessProfile
-              : summary?.role
-                ? DtoType.Role
-                : undefined)
+            ? DtoType.AccessProfile
+            : summary?.role
+            ? DtoType.Role
+            : undefined)
     const details =
         type === DtoType.Entitlement
             ? summary?.entitlement
             : type === DtoType.AccessProfile
-              ? summary?.accessProfile
-              : type === DtoType.Role
-                ? summary?.role
-                : undefined
+            ? summary?.accessProfile
+            : type === DtoType.Role
+            ? summary?.role
+            : undefined
 
     return {
         type,
@@ -207,48 +181,6 @@ function subtractUtcMonths(date: Date, months: number): Date {
     return result
 }
 
-function formatFrenchDate(date: Date): string {
-    const day = String(date.getUTCDate()).padStart(2, '0')
-    const month = String(date.getUTCMonth() + 1).padStart(2, '0')
-    return `${day}/${month}/${date.getUTCFullYear()}`
-}
-
-function normalizeConfigValue(value: unknown): string {
-    return String(value ?? '')
-        .trim()
-        .normalize('NFD')
-        .replace(/\p{Diacritic}/gu, '')
-        .toLowerCase()
-}
-
-function flattenAttributeValue(value: unknown): string[] {
-    if (value === undefined || value === null) {
-        return []
-    }
-    if (Array.isArray(value)) {
-        return value.flatMap(flattenAttributeValue)
-    }
-    if (typeof value === 'object' && value !== null && 'value' in value) {
-        return flattenAttributeValue((value as { value: unknown }).value)
-    }
-    const normalized = normalizeConfigValue(value)
-    return normalized ? [normalized] : []
-}
-
-function readIdentityAttribute(
-    attributes: Record<string, unknown>,
-    attributeName: string
-): { raw: unknown; values: string[] } {
-    const exact = attributes[attributeName]
-    if (exact !== undefined) {
-        return { raw: exact, values: flattenAttributeValue(exact) }
-    }
-
-    const expected = attributeName.trim().toLowerCase()
-    const match = Object.entries(attributes).find(([key]) => key.toLowerCase() === expected)
-    return { raw: match?.[1], values: flattenAttributeValue(match?.[1]) }
-}
-
 function readBoolean(config: any, key: string, defaultValue = false): boolean {
     const value = config?.[key]
     if (value === undefined || value === null || value === '') {
@@ -272,24 +204,12 @@ function readPositiveInteger(config: any, key: string): number {
     return value
 }
 
-function readAttributeList(config: any, key: string): Set<string> {
-    const value = config?.[key]
-    if (value !== undefined && !Array.isArray(value)) {
-        throw new ConnectorError(`${key} must be a list`)
-    }
-    return new Set(
-        (value ?? [])
-            .filter((attribute: unknown): attribute is string => typeof attribute === 'string')
-            .map((attribute: string) => attribute.trim().toLowerCase())
-            .filter(Boolean)
-    )
-}
-
 function csvCell(value: string): string {
     return `"${value.replace(/"/g, '""')}"`
 }
 
-const IRREVOCABLE_ROLE_COMMENT = 'Pré-validation par matrice: droits obligatoires'
+const IRREVOCABLE_ROLE_COMMENT =
+    'Automatically approved because this is a birthright / mandatory role and can only be acknowledged'
 
 /**
  * ISC rejects a whole decision batch when a single item is not allowed (self-certification for
@@ -323,21 +243,15 @@ function chunk<T>(items: T[], size: number): T[][] {
 export class MyClient {
     private configuration: Configuration
     private readonly debug: boolean
-    private readonly enableAiRecommendations: boolean
+    private readonly autoApproveIrrevocableRoles: boolean
+    private readonly autoApprovePreviouslyApprovedAccess: boolean
+    private readonly autoApproveAiRecommendedAccess: boolean
     private readonly businessRulesOverrideAiNo: boolean
     private readonly approveAiRecommendedPreviouslyRevoked: boolean
     private readonly aiRecommendationBatchSize: number
-    private readonly populationIdentityAttribute: string
-    private readonly employeePopulationValues: Set<string>
-    private readonly contractorPopulationValues: Set<string>
-    private readonly employeeConfig: PopulationConfig
-    private readonly contractorConfig: PopulationConfig
-    private readonly certificationCampaignNameCache = new Map<string, string | undefined>()
+    private readonly maxPreviousCertificationAgeMonths: number
     private readonly certificationItemsCache = new Map<string, AccessReviewItem[]>()
-    private readonly identityHistoryEventsCache = new Map<
-        string,
-        GetHistoricalIdentityEventsV1200ResponseInner[]
-    >()
+    private readonly identityHistoryEventsCache = new Map<string, GetHistoricalIdentityEventsV1200ResponseInner[]>()
     private executionLogs: ExecutionLog[] = []
 
     constructor(config: any) {
@@ -350,59 +264,19 @@ export class MyClient {
         }
 
         this.debug = readBoolean(config, 'debug', false)
-        this.enableAiRecommendations = readBoolean(config, 'enableAiRecommendations', false)
+        this.autoApproveIrrevocableRoles = readBoolean(config, 'autoApproveIrrevocableRoles', true)
+        this.autoApprovePreviouslyApprovedAccess = readBoolean(config, 'autoApprovePreviouslyApprovedAccess', true)
+        this.autoApproveAiRecommendedAccess = readBoolean(config, 'autoApproveAiRecommendedAccess', false)
         this.businessRulesOverrideAiNo = readBoolean(config, 'businessRulesOverrideAiNo', false)
-        this.approveAiRecommendedPreviouslyRevoked = readBoolean(
-            config,
-            'approveAiRecommendedPreviouslyRevoked',
-            false
-        )
+        this.approveAiRecommendedPreviouslyRevoked = readBoolean(config, 'approveAiRecommendedPreviouslyRevoked', false)
         this.aiRecommendationBatchSize =
             config?.aiRecommendationBatchSize === undefined
                 ? DEFAULT_AI_RECOMMENDATION_BATCH_SIZE
                 : readPositiveInteger(config, 'aiRecommendationBatchSize')
-
-        this.populationIdentityAttribute =
-            typeof config?.populationIdentityAttribute === 'string'
-                ? config.populationIdentityAttribute.trim()
-                : ''
-        if (!this.populationIdentityAttribute) {
-            throw new ConnectorError('populationIdentityAttribute is required')
-        }
-        this.employeePopulationValues = new Set(
-            [...readAttributeList(config, 'employeePopulationValues')].map(normalizeConfigValue)
-        )
-        this.contractorPopulationValues = new Set(
-            [...readAttributeList(config, 'contractorPopulationValues')].map(normalizeConfigValue)
-        )
-        if (this.employeePopulationValues.size === 0 || this.contractorPopulationValues.size === 0) {
-            throw new ConnectorError(
-                'employeePopulationValues and contractorPopulationValues must each contain at least one value'
-            )
-        }
-
-        this.employeeConfig = {
-            population: 'EMPLOYEE',
-            maxPreviousCertificationAgeMonths: readPositiveInteger(
-                config,
-                'employeeMaxPreviousCertificationAgeMonths'
-            ),
-            mobilityIdentityAttributes: readAttributeList(
-                config,
-                'employeeMobilityIdentityAttributes'
-            ),
-        }
-        this.contractorConfig = {
-            population: 'CONTRACTOR',
-            maxPreviousCertificationAgeMonths: readPositiveInteger(
-                config,
-                'contractorMaxPreviousCertificationAgeMonths'
-            ),
-            mobilityIdentityAttributes: readAttributeList(
-                config,
-                'contractorMobilityIdentityAttributes'
-            ),
-        }
+        this.maxPreviousCertificationAgeMonths =
+            config?.maxPreviousCertificationAgeMonths === undefined
+                ? 12
+                : readPositiveInteger(config, 'maxPreviousCertificationAgeMonths')
 
         let tokenUrl: string
         try {
@@ -430,54 +304,6 @@ export class MyClient {
 
     private getApi(): CertificationsApi {
         return new CertificationsApi(this.configuration)
-    }
-
-    private async getPopulationConfig(identityId: string): Promise<PopulationConfig | undefined> {
-        const response = await new IdentitiesApi(this.configuration).getIdentityV1({ id: identityId })
-        const attributes = (response.data.attributes ?? {}) as Record<string, unknown>
-        const { raw, values } = readIdentityAttribute(attributes, this.populationIdentityAttribute)
-        const displayedValue = values.length > 0 ? values.join(', ') : String(raw ?? '')
-
-        if (values.some((value) => this.employeePopulationValues.has(value))) {
-            this.trace(
-                'info',
-                `Identity ${identityId}: population EMPLOYEE from attribute ${this.populationIdentityAttribute}="${displayedValue}"`
-            )
-            return this.employeeConfig
-        }
-        if (values.some((value) => this.contractorPopulationValues.has(value))) {
-            this.trace(
-                'info',
-                `Identity ${identityId}: population CONTRACTOR from attribute ${this.populationIdentityAttribute}="${displayedValue}"`
-            )
-            return this.contractorConfig
-        }
-
-        this.trace(
-            'warn',
-            `Identity ${identityId}: unsupported population "${displayedValue}" in attribute ${this.populationIdentityAttribute}; no history based pre-approval`
-        )
-        return undefined
-    }
-
-    private async getCertificationCampaignName(certificationId: string): Promise<string | undefined> {
-        if (this.certificationCampaignNameCache.has(certificationId)) {
-            return this.certificationCampaignNameCache.get(certificationId)
-        }
-
-        try {
-            const response = await this.getApi().getIdentityCertificationV1({ id: certificationId })
-            const campaignName = response.data.campaign?.name
-            this.certificationCampaignNameCache.set(certificationId, campaignName)
-            return campaignName
-        } catch (error) {
-            this.trace(
-                'warn',
-                `Certification ${certificationId}: campaign name could not be read, treating it as a regular certification: ${describeApiError(error)}`
-            )
-            this.certificationCampaignNameCache.set(certificationId, undefined)
-            return undefined
-        }
     }
 
     private trace(level: 'info' | 'warn' | 'error' | 'debug', message: string): void {
@@ -552,30 +378,37 @@ export class MyClient {
         }[]
     > {
         const certifications = await this.getCertificationByCampaignId(campaignId)
-        this.trace('info',`Campaign ${campaignId}: found ${certifications.length} certification(s)`)
+        this.trace('info', `Campaign ${campaignId}: found ${certifications.length} certification(s)`)
 
         const results: { certification: IdentityCertificationDto; items: AccessReviewItem[] }[] = []
 
         for (const certification of certifications) {
             if (!certification?.id) {
-                this.trace('warn',`Skipping certification without id for campaign ${campaignId}`)
+                this.trace('warn', `Skipping certification without id for campaign ${campaignId}`)
                 continue
             }
 
-            this.trace('info',
-                `Processing certification ${certification.id} "${certification.name ?? ''}" (reviewer ${certification.reviewer?.name ?? 'unknown'}, phase ${certification.phase ?? 'unknown'})`
+            this.trace(
+                'info',
+                `Processing certification ${certification.id} "${certification.name ?? ''}" (reviewer ${
+                    certification.reviewer?.name ?? 'unknown'
+                }, phase ${certification.phase ?? 'unknown'})`
             )
 
             try {
                 const items = await this.getCertificationItemsByCertificationId(certification.id)
                 const pendingItems = items.filter((item) => !item.completed).length
-                this.trace('info',
+                this.trace(
+                    'info',
                     `Certification ${certification.id}: ${items.length} item(s), ${pendingItems} still pending a decision`
                 )
                 results.push({ certification, items })
             } catch (error) {
-                this.trace('error',
-                    `Certification ${certification.id}: items could not be read, skipping it: ${describeApiError(error)}`
+                this.trace(
+                    'error',
+                    `Certification ${certification.id}: items could not be read, skipping it: ${describeApiError(
+                        error
+                    )}`
                 )
             }
         }
@@ -596,7 +429,7 @@ export class MyClient {
             apiInstance.getHistoricalIdentityEventsV1,
             {
                 id: identityId,
-                eventTypes: [IDENTITY_CERTIFIED_EVENT_TYPE, ATTRIBUTES_CHANGED_EVENT_TYPE],
+                eventTypes: [IDENTITY_CERTIFIED_EVENT_TYPE],
                 xSailPointExperimental: 'true',
             },
             250
@@ -608,79 +441,28 @@ export class MyClient {
     }
 
     /**
-     * Collects the changes on configured mobility attributes that happened after `windowStart`.
-     * Events without a usable date are kept on purpose so that a doubt never leads to a pre-approval.
-     */
-    private findMobilityChanges(
-        identityId: string,
-        events: GetHistoricalIdentityEventsV1200ResponseInner[],
-        windowStart: Date,
-        mobilityIdentityAttributes: Set<string>,
-        windowEnd?: Date
-    ): MobilityChange[] {
-        const changes: MobilityChange[] = []
-
-        for (const event of events) {
-            if (event.eventType !== ATTRIBUTES_CHANGED_EVENT_TYPE) {
-                continue
-            }
-
-            const timestamp = eventTimestamp(event)
-            if (!timestamp) {
-                this.trace('warn',
-                    `Identity ${identityId}: ${ATTRIBUTES_CHANGED_EVENT_TYPE} event without date, considered inside the mobility window`
-                )
-            } else if (
-                timestamp <= windowStart.getTime() ||
-                (windowEnd && timestamp >= windowEnd.getTime())
-            ) {
-                continue
-            }
-
-            for (const change of event.attributeChanges ?? []) {
-                const name = change.name?.trim()
-                if (!name || !mobilityIdentityAttributes.has(name.toLowerCase())) {
-                    continue
-                }
-
-                changes.push({
-                    attribute: name,
-                    previousValue: change.previousValue,
-                    newValue: change.newValue,
-                    changedAt: timestamp ? new Date(timestamp).toISOString() : undefined,
-                })
-            }
-        }
-
-        return changes
-    }
-
-    /**
-     * Finds the identity's most recent previous certification, and tells whether it can feed the business
-     * rules: it is discarded when the population is unknown, when it is too old, or when a configured
-     * mobility attribute changed after it was signed. The history is read once per identity: a discarded
-     * certification is still returned so that its revocations can guard AI approvals without a second search.
+     * Finds the identity's most recent previous certification outside the current campaign. A certification
+     * outside the configured age window cannot feed the previous-approval rule, but its revocations still
+     * guard AI approvals without requiring a second history lookup.
      */
     private async getPreviousCertificationForIdentity(
         identityId: string,
         excludedCertificationIds: Set<string>
     ): Promise<PreviousCertificationLookup | undefined> {
         const events = await this.getIdentityHistoryEvents(identityId)
-        const certificationEvents = events.filter(
-            (event) => event.eventType === IDENTITY_CERTIFIED_EVENT_TYPE
-        )
-        this.trace('info',
-            `Identity ${identityId}: ${events.length} history event(s) retrieved (${certificationEvents.length} ${IDENTITY_CERTIFIED_EVENT_TYPE}, ${events.length - certificationEvents.length} ${ATTRIBUTES_CHANGED_EVENT_TYPE})`
+        const certificationEvents = events.filter((event) => event.eventType === IDENTITY_CERTIFIED_EVENT_TYPE)
+        this.trace(
+            'info',
+            `Identity ${identityId}: ${certificationEvents.length} ${IDENTITY_CERTIFIED_EVENT_TYPE} event(s) retrieved`
         )
 
         const certificationEvent = certificationEvents
-            .filter(
-                (event) => event.certificationId && !excludedCertificationIds.has(event.certificationId)
-            )
+            .filter((event) => event.certificationId && !excludedCertificationIds.has(event.certificationId))
             .sort((a, b) => eventTimestamp(b) - eventTimestamp(a))[0]
 
         if (!certificationEvent) {
-            this.trace('info',
+            this.trace(
+                'info',
                 `Identity ${identityId}: no previous certification outside the current campaign, nothing can be pre-approved from history`
             )
             return undefined
@@ -688,7 +470,8 @@ export class MyClient {
 
         const signedTimestamp = eventTimestamp(certificationEvent)
         if (!signedTimestamp) {
-            this.trace('warn',
+            this.trace(
+                'warn',
                 `Identity ${identityId}: previous certification ${certificationEvent.certificationId} has no usable signed date, skipping history based pre-approval`
             )
             return undefined
@@ -698,99 +481,28 @@ export class MyClient {
         const certification: PreviousCertification = {
             id: certificationEvent.certificationId as string,
             signedAt,
-            source: 'ANNUAL',
         }
-
-        const populationConfig = await this.getPopulationConfig(identityId)
-        if (!populationConfig) {
-            return { certification, eligible: false }
-        }
-
-        const oldestAllowedDate = subtractUtcMonths(
-            new Date(),
-            populationConfig.maxPreviousCertificationAgeMonths
-        )
+        const oldestAllowedDate = subtractUtcMonths(new Date(), this.maxPreviousCertificationAgeMonths)
 
         if (signedAt < oldestAllowedDate) {
-            this.trace('info',
-                `Identity ${identityId} (${populationConfig.population}): previous certification ${certificationEvent.certificationId} signed at ${signedAt.toISOString()} is older than ${populationConfig.maxPreviousCertificationAgeMonths} month(s) (limit ${oldestAllowedDate.toISOString()}), access must be reviewed manually`
+            this.trace(
+                'info',
+                `Identity ${identityId}: previous certification ${
+                    certificationEvent.certificationId
+                } signed at ${signedAt.toISOString()} is older than ${
+                    this.maxPreviousCertificationAgeMonths
+                } month(s) (limit ${oldestAllowedDate.toISOString()})`
             )
             return { certification, eligible: false }
         }
 
-        this.trace('info',
-            `Identity ${identityId} (${populationConfig.population}): eligible previous certification ${certificationEvent.certificationId} signed at ${signedAt.toISOString()} (within ${populationConfig.maxPreviousCertificationAgeMonths} month(s))`
+        this.trace(
+            'info',
+            `Identity ${identityId}: previous certification ${
+                certificationEvent.certificationId
+            } signed at ${signedAt.toISOString()} is within ${this.maxPreviousCertificationAgeMonths} month(s)`
         )
-
-        // The certification is guaranteed to be inside the age window, so it is the most restrictive
-        // start for the mobility window.
-        const mobilityWindowStart = signedAt > oldestAllowedDate ? signedAt : oldestAllowedDate
-        const mobilityChanges = this.findMobilityChanges(
-            identityId,
-            events,
-            mobilityWindowStart,
-            populationConfig.mobilityIdentityAttributes
-        )
-
-        if (mobilityChanges.length > 0) {
-            for (const change of mobilityChanges) {
-                this.trace('info',
-                    `Identity ${identityId}: mobility detected on attribute "${change.attribute}" at ${change.changedAt ?? 'unknown date'} ("${change.previousValue ?? ''}" -> "${change.newValue ?? ''}")`
-                )
-            }
-            this.trace('info',
-                `Identity ${identityId}: ${mobilityChanges.length} mobility change(s) since ${mobilityWindowStart.toISOString()}, certification ${certificationEvent.certificationId} is discarded and access must be reviewed manually`
-            )
-            return { certification, eligible: false }
-        }
-
-        this.trace('info',
-            `Identity ${identityId}: no mobility on [${[...populationConfig.mobilityIdentityAttributes].join(', ') || 'none configured'}] since ${mobilityWindowStart.toISOString()}, certification ${certificationEvent.certificationId} is kept as reference`
-        )
-
-        const campaignName = await this.getCertificationCampaignName(certificationEvent.certificationId)
-        const isMobilityMini = campaignName
-            ?.trim()
-            .toLowerCase()
-            .startsWith('mini certification mobilité:')
-        let mobilityAt: Date | undefined
-
-        if (isMobilityMini) {
-            const precedingMobility = this.findMobilityChanges(
-                identityId,
-                events,
-                oldestAllowedDate,
-                populationConfig.mobilityIdentityAttributes,
-                signedAt
-            ).sort((a, b) => {
-                const left = a.changedAt ? Date.parse(a.changedAt) : 0
-                const right = b.changedAt ? Date.parse(b.changedAt) : 0
-                return right - left
-            })[0]
-
-            if (precedingMobility?.changedAt) {
-                mobilityAt = new Date(precedingMobility.changedAt)
-                this.trace(
-                    'info',
-                    `Identity ${identityId}: certification ${certificationEvent.certificationId} belongs to mobility mini-campaign "${campaignName}" and is linked by convention to the latest preceding mobility at ${mobilityAt.toISOString()}`
-                )
-            } else {
-                this.trace(
-                    'warn',
-                    `Identity ${identityId}: certification ${certificationEvent.certificationId} belongs to mobility mini-campaign "${campaignName}", but no configured mobility event was found before it`
-                )
-            }
-        }
-
-        return {
-            certification: {
-                ...certification,
-                campaignName,
-                source: isMobilityMini ? 'MOBILITY_MINI' : 'ANNUAL',
-                mobilityAt,
-            },
-            eligible: true,
-        }
+        return { certification, eligible: true }
     }
 
     /**
@@ -816,9 +528,10 @@ export class MyClient {
                 continue
             }
 
-            const decisions =
-                decisionsByIdentity.get(identityId) ??
-                { approved: new Set<AccessKey>(), revoked: new Set<AccessKey>() }
+            const decisions = decisionsByIdentity.get(identityId) ?? {
+                approved: new Set<AccessKey>(),
+                revoked: new Set<AccessKey>(),
+            }
             if (isPositiveDecision(item.decision)) {
                 decisions.approved.add(key)
             } else if (item.decision === 'REVOKE') {
@@ -849,19 +562,13 @@ export class MyClient {
 
         for (const identityId of identityIds) {
             try {
-                const lookup = await this.getPreviousCertificationForIdentity(
-                    identityId,
-                    currentCertificationIds
-                )
+                const lookup = await this.getPreviousCertificationForIdentity(identityId, currentCertificationIds)
 
                 if (!lookup) {
                     continue
                 }
 
-                const decisionsByIdentity = await this.getDecisionsByIdentity(
-                    lookup.certification.id,
-                    decisionsCache
-                )
+                const decisionsByIdentity = await this.getDecisionsByIdentity(lookup.certification.id, decisionsCache)
                 const decisions = decisionsByIdentity.get(identityId)
                 revoked.set(identityId, decisions?.revoked ?? new Set<AccessKey>())
 
@@ -873,18 +580,19 @@ export class MyClient {
                 approved.set(identityId, {
                     certificationId: lookup.certification.id,
                     signedAt: lookup.certification.signedAt,
-                    campaignName: lookup.certification.campaignName,
-                    source: lookup.certification.source,
-                    mobilityAt: lookup.certification.mobilityAt,
                     keys: approvedKeys,
                 })
 
-                this.trace('info',
+                this.trace(
+                    'info',
                     `Identity ${identityId}: ${approvedKeys.size} access previously approved in certification ${lookup.certification.id} are eligible for pre-approval`
                 )
             } catch (error) {
-                this.trace('error',
-                    `Identity ${identityId}: previous certification could not be read, no history based pre-approval and no AI approval for it: ${describeApiError(error)}`
+                this.trace(
+                    'error',
+                    `Identity ${identityId}: previous certification could not be read, no history based pre-approval and no AI approval for it: ${describeApiError(
+                        error
+                    )}`
                 )
                 // The sentinel prevents AI approval when previous decisions could not be verified.
                 revoked.set(identityId, new Set(['*']))
@@ -898,7 +606,7 @@ export class MyClient {
         items: AccessReviewItem[]
     ): Promise<Map<string, RecommendationResponseRecommendationEnum>> {
         const recommendations = new Map<string, RecommendationResponseRecommendationEnum>()
-        if (!this.enableAiRecommendations) {
+        if (!this.autoApproveAiRecommendedAccess) {
             return recommendations
         }
 
@@ -921,21 +629,25 @@ export class MyClient {
                 identityId,
                 item: {
                     id: access.id,
-                    type: access.type as RecommendationRequest['item'] extends { type?: infer T }
-                        ? T
-                        : never,
+                    type: access.type as RecommendationRequest['item'] extends { type?: infer T } ? T : never,
                 },
             })
         }
 
         const entries = [...requestsByKey.entries()]
         const batches = chunk(entries, this.aiRecommendationBatchSize)
-        this.trace('info',
+        this.trace(
+            'info',
             `AI recommendations: ${entries.length} unique identity/access pair(s) to score in ${batches.length} batch(es) of up to ${this.aiRecommendationBatchSize}, ${unsupportedItems} pending item(s) ignored because no supported access type and id could be read`
         )
         if (firstUnsupportedItem) {
-            this.trace('warn',
-                `AI recommendations: ${describeItem(firstUnsupportedItem)} has no usable access reference, its accessSummary starts with ${JSON.stringify(firstUnsupportedItem.accessSummary).slice(0, 500)}`
+            this.trace(
+                'warn',
+                `AI recommendations: ${describeItem(
+                    firstUnsupportedItem
+                )} has no usable access reference, its accessSummary starts with ${JSON.stringify(
+                    firstUnsupportedItem.accessSummary
+                ).slice(0, 500)}`
             )
         }
 
@@ -979,8 +691,8 @@ export class MyClient {
                         echoedKey && requestsByKey.has(echoedKey)
                             ? echoedKey
                             : canPairByIndex
-                              ? batch[index][0]
-                              : undefined
+                            ? batch[index][0]
+                            : undefined
                     if (!key) {
                         return
                     }
@@ -988,17 +700,28 @@ export class MyClient {
                     mapped++
                 })
 
-                this.trace('info',
+                this.trace(
+                    'info',
                     `AI recommendations: batch ${batchNumber}/${batches.length} sent ${batch.length} request(s), received ${results.length} response(s) and mapped ${mapped} recommendation(s)`
                 )
                 if (mapped === 0) {
-                    this.trace('warn',
-                        `AI recommendations: batch ${batchNumber}/${batches.length} returned no usable recommendation, response payload starts with ${JSON.stringify(response.data).slice(0, 500)}`
+                    this.trace(
+                        'warn',
+                        `AI recommendations: batch ${batchNumber}/${
+                            batches.length
+                        } returned no usable recommendation, response payload starts with ${JSON.stringify(
+                            response.data
+                        ).slice(0, 500)}`
                     )
                 }
             } catch (error) {
-                this.trace('warn',
-                    `AI recommendations: batch ${batchNumber}/${batches.length} failed; its items will follow business rules because no recommendation is available: ${describeApiError(error)}`
+                this.trace(
+                    'warn',
+                    `AI recommendations: batch ${batchNumber}/${
+                        batches.length
+                    } failed; its items will follow business rules because no recommendation is available: ${describeApiError(
+                        error
+                    )}`
                 )
             }
         }
@@ -1007,10 +730,9 @@ export class MyClient {
         for (const recommendation of recommendations.values()) {
             distribution.set(recommendation, (distribution.get(recommendation) ?? 0) + 1)
         }
-        const summary =
-            [...distribution.entries()].map(([value, count]) => `${count} ${value}`).join(', ') ||
-            'none'
-        this.trace('info',
+        const summary = [...distribution.entries()].map(([value, count]) => `${count} ${value}`).join(', ') || 'none'
+        this.trace(
+            'info',
             `AI recommendations: ${recommendations.size} recommendation(s) available out of ${entries.length} requested (${summary})`
         )
         if (entries.length > 0 && recommendations.size === 0) {
@@ -1038,10 +760,12 @@ export class MyClient {
             }
 
             let businessCandidate: CandidateDecision | undefined
-            if (isIrrevocableRole(item)) {
+            if (this.autoApproveIrrevocableRoles && isIrrevocableRole(item)) {
                 this.trace(
                     'info',
-                    `Certification ${certificationId}: acknowledging ${describeItem(item)} for identity ${getIdentityId(item) ?? 'unknown'} because the role is not revocable`
+                    `Certification ${certificationId}: acknowledging ${describeItem(item)} for identity ${
+                        getIdentityId(item) ?? 'unknown'
+                    } because the role is not revocable`
                 )
                 businessCandidate = {
                     itemId: item.id,
@@ -1052,7 +776,7 @@ export class MyClient {
                     comments: IRREVOCABLE_ROLE_COMMENT,
                     reason: 'IRREVOCABLE_ROLE',
                 }
-            } else if (item.newAccess === false) {
+            } else if (this.autoApprovePreviouslyApprovedAccess && item.newAccess === false) {
                 const identityId = getIdentityId(item)
                 const key = getAccessKey(item)
                 if (identityId && key) {
@@ -1060,7 +784,9 @@ export class MyClient {
                     if (previouslyApproved?.keys.has(key)) {
                         this.trace(
                             'info',
-                            `Certification ${certificationId}: pre-approving ${describeItem(item)} for identity ${identityId} because the same access was already approved in the last eligible certification`
+                            `Certification ${certificationId}: pre-approving ${describeItem(
+                                item
+                            )} for identity ${identityId} because the same access was already approved in the last eligible certification`
                         )
                         businessCandidate = {
                             itemId: item.id,
@@ -1068,34 +794,32 @@ export class MyClient {
                             accessId: getAccessRef(item).id,
                             accessType: getAccessRef(item).type,
                             decision: CertificationDecision.Approve,
-                            comments:
-                                previouslyApproved.source === 'MOBILITY_MINI'
-                                    ? previouslyApproved.mobilityAt
-                                        ? `Pré-validation car déjà approuvé lors de la mini certification liée à la mobilité du ${formatFrenchDate(previouslyApproved.mobilityAt)}`
-                                        : `Pré-validation car déjà approuvé lors de la mini certification de mobilité en date du ${formatFrenchDate(previouslyApproved.signedAt)}`
-                                    : `Pré-validation à partir d'une campagne de recertification précédente en date du ${formatFrenchDate(previouslyApproved.signedAt)}`,
+                            comments: `Automatically approved because this access was approved in the previous certification signed on ${previouslyApproved.signedAt
+                                .toISOString()
+                                .slice(0, 10)}`,
                             reason: 'PREVIOUSLY_APPROVED',
-                            previousSource: previouslyApproved.source,
                         }
                     }
                 }
             }
 
             const recommendationKey = getRecommendationKey(item)
-            const recommendation = recommendationKey
-                ? recommendations.get(recommendationKey)
-                : undefined
+            const recommendation = recommendationKey ? recommendations.get(recommendationKey) : undefined
 
             if (recommendation === 'NO') {
                 if (this.businessRulesOverrideAiNo && businessCandidate) {
                     this.trace(
                         'info',
-                        `Certification ${certificationId}: applying the business rule for ${describeItem(item)} despite AI recommendation NO because businessRulesOverrideAiNo is enabled`
+                        `Certification ${certificationId}: applying the business rule for ${describeItem(
+                            item
+                        )} despite AI recommendation NO because businessRulesOverrideAiNo is enabled`
                     )
                 } else {
                     this.trace(
                         'info',
-                        `Certification ${certificationId}: leaving ${describeItem(item)} to the reviewer because the ISC AI engine returned recommendation NO`
+                        `Certification ${certificationId}: leaving ${describeItem(
+                            item
+                        )} to the reviewer because the ISC AI engine returned recommendation NO`
                     )
                     continue
                 }
@@ -1110,7 +834,11 @@ export class MyClient {
             if (recommendation !== 'YES') {
                 this.trace(
                     'info',
-                    `Certification ${certificationId}: leaving ${describeItem(item)} to the reviewer because no business rule applies and AI recommendation is ${recommendation ?? 'not available'}`
+                    `Certification ${certificationId}: leaving ${describeItem(
+                        item
+                    )} to the reviewer because no business rule applies and AI recommendation is ${
+                        recommendation ?? 'not available'
+                    }`
                 )
                 continue
             }
@@ -1125,7 +853,9 @@ export class MyClient {
             if (wasPreviouslyRevoked && !this.approveAiRecommendedPreviouslyRevoked) {
                 this.trace(
                     'info',
-                    `Certification ${certificationId}: leaving ${describeItem(item)} to the reviewer despite AI recommendation YES because it was revoked in the last signed certification`
+                    `Certification ${certificationId}: leaving ${describeItem(
+                        item
+                    )} to the reviewer despite AI recommendation YES because it was revoked in the last signed certification`
                 )
                 continue
             }
@@ -1137,13 +867,15 @@ export class MyClient {
                 accessType: getAccessRef(item).type,
                 decision: CertificationDecision.Approve,
                 comments: wasPreviouslyRevoked
-                    ? 'Pré-validation automatique par le moteur de recommandation AI de SailPoint malgré une révocation lors de la précédente certification'
-                    : 'Pré-validation automatique car accès recommandé par le moteur AI de SailPoint',
+                    ? 'Automatically approved by SailPoint AI despite being revoked in the previous certification'
+                    : 'Automatically approved because SailPoint AI recommended this access',
                 reason: 'AI_RECOMMENDED',
             })
             this.trace(
                 'info',
-                `Certification ${certificationId}: pre-approving ${describeItem(item)} for identity ${identityId} because the ISC AI engine returned recommendation YES`
+                `Certification ${certificationId}: pre-approving ${describeItem(
+                    item
+                )} for identity ${identityId} because the ISC AI engine returned recommendation YES`
             )
         }
 
@@ -1174,7 +906,8 @@ export class MyClient {
 
         for (const batch of batches) {
             batchNumber += 1
-            this.trace('info',
+            this.trace(
+                'info',
                 `Certification ${certificationId}: submitting batch ${batchNumber}/${batches.length} with ${batch.length} decision(s)`
             )
 
@@ -1186,8 +919,11 @@ export class MyClient {
                 submitted.push(...batch)
                 continue
             } catch (error) {
-                this.trace('warn',
-                    `Certification ${certificationId}: batch ${batchNumber}/${batches.length} rejected (${describeApiError(error)}), replaying its ${batch.length} decision(s) one by one`
+                this.trace(
+                    'warn',
+                    `Certification ${certificationId}: batch ${batchNumber}/${
+                        batches.length
+                    } rejected (${describeApiError(error)}), replaying its ${batch.length} decision(s) one by one`
                 )
             }
 
@@ -1200,8 +936,13 @@ export class MyClient {
                     submitted.push(candidate)
                 } catch (error) {
                     const description = describeApiError(error)
-                    this.trace('error',
-                        `Certification ${certificationId}: decision refused for item ${candidate.itemId} (identity ${candidate.identityId ?? 'unknown'}, ${candidate.accessType ?? 'UNKNOWN_TYPE'} ${candidate.accessId ?? 'UNKNOWN_ID'}, reason ${candidate.reason}): ${description}`
+                    this.trace(
+                        'error',
+                        `Certification ${certificationId}: decision refused for item ${candidate.itemId} (identity ${
+                            candidate.identityId ?? 'unknown'
+                        }, ${candidate.accessType ?? 'UNKNOWN_TYPE'} ${candidate.accessId ?? 'UNKNOWN_ID'}, reason ${
+                            candidate.reason
+                        }): ${description}`
                     )
                     failed.push({
                         itemId: candidate.itemId,
@@ -1228,8 +969,9 @@ export class MyClient {
         this.executionLogs = []
         this.certificationItemsCache.clear()
         this.identityHistoryEventsCache.clear()
-        this.trace('info',
-            `Starting pre-approval for campaign ${campaignId} (debug=${this.debug}, enableAiRecommendations=${this.enableAiRecommendations}, businessRulesOverrideAiNo=${this.businessRulesOverrideAiNo}, approveAiRecommendedPreviouslyRevoked=${this.approveAiRecommendedPreviouslyRevoked}, aiRecommendationBatchSize=${this.aiRecommendationBatchSize}, populationIdentityAttribute=${this.populationIdentityAttribute}, employeeValues=[${[...this.employeePopulationValues].join(', ')}], employeeMaxAgeMonths=${this.employeeConfig.maxPreviousCertificationAgeMonths}, employeeMobilityAttributes=[${[...this.employeeConfig.mobilityIdentityAttributes].join(', ') || 'none'}], contractorValues=[${[...this.contractorPopulationValues].join(', ')}], contractorMaxAgeMonths=${this.contractorConfig.maxPreviousCertificationAgeMonths}, contractorMobilityAttributes=[${[...this.contractorConfig.mobilityIdentityAttributes].join(', ') || 'none'}])`
+        this.trace(
+            'info',
+            `Starting pre-approval for campaign ${campaignId} (debug=${this.debug}, autoApproveIrrevocableRoles=${this.autoApproveIrrevocableRoles}, autoApprovePreviouslyApprovedAccess=${this.autoApprovePreviouslyApprovedAccess}, maxPreviousCertificationAgeMonths=${this.maxPreviousCertificationAgeMonths}, autoApproveAiRecommendedAccess=${this.autoApproveAiRecommendedAccess}, businessRulesOverrideAiNo=${this.businessRulesOverrideAiNo}, approveAiRecommendedPreviouslyRevoked=${this.approveAiRecommendedPreviouslyRevoked}, aiRecommendationBatchSize=${this.aiRecommendationBatchSize})`
         )
 
         const certificationsWithItems = await this.getCertificationItemsByCampaignId(campaignId)
@@ -1243,7 +985,11 @@ export class MyClient {
             }
             for (const item of items) {
                 allItems.push(item)
-                if (item.completed || isIrrevocableRole(item) || item.newAccess !== false) {
+                if (
+                    item.completed ||
+                    item.newAccess !== false ||
+                    (!this.autoApprovePreviouslyApprovedAccess && !this.autoApproveAiRecommendedAccess)
+                ) {
                     continue
                 }
                 const identityId = getIdentityId(item)
@@ -1253,15 +999,21 @@ export class MyClient {
             }
         }
 
-        this.trace('info',
+        this.trace(
+            'info',
             `Campaign ${campaignId}: ${recertifiedIdentityIds.size} identity(ies) with re-certified access to check against their history`
         )
 
         const { approved: previousApprovedAccess, revoked: previouslyRevokedAccess } =
-            await this.getPreviousCertificationDecisionsByIdentity(
-                recertifiedIdentityIds,
-                currentCertificationIds
-            )
+            recertifiedIdentityIds.size > 0
+                ? await this.getPreviousCertificationDecisionsByIdentity(
+                      recertifiedIdentityIds,
+                      currentCertificationIds
+                  )
+                : {
+                      approved: new Map<string, PreviousApprovedAccess>(),
+                      revoked: new Map<string, Set<AccessKey>>(),
+                  }
         const recommendations = await this.getAiRecommendations(allItems)
 
         const certifications: CertificationResult[] = []
@@ -1289,12 +1041,10 @@ export class MyClient {
                 const previouslyApproved = candidates.filter(
                     (candidate) => candidate.reason === 'PREVIOUSLY_APPROVED'
                 ).length
-                const aiRecommended = candidates.filter(
-                    (candidate) => candidate.reason === 'AI_RECOMMENDED'
-                ).length
+                const aiRecommended = candidates.filter((candidate) => candidate.reason === 'AI_RECOMMENDED').length
 
                 if (candidates.length === 0) {
-                    this.trace('info',`Certification ${certification.id}: no item matches the auto-approval criteria`)
+                    this.trace('info', `Certification ${certification.id}: no item matches the auto-approval criteria`)
                     certifications.push({
                         certificationId: certification.id,
                         submitted: 0,
@@ -1305,17 +1055,19 @@ export class MyClient {
                     continue
                 }
 
-                this.trace('info',
+                this.trace(
+                    'info',
                     `Certification ${certification.id}: ${candidates.length} auto-approval(s) to submit (${irrevocableRoles} non revocable role(s), ${previouslyApproved} previously approved access, ${aiRecommended} AI recommended access)`
                 )
 
                 const { submitted, failed } = await this.submitDecisions(certification.id, candidates)
                 if (failed.length > 0) {
-                    this.trace('warn',
+                    this.trace(
+                        'warn',
                         `Certification ${certification.id}: ${submitted.length} decision(s) applied, ${failed.length} refused by ISC, moving on to the next certification`
                     )
                 } else {
-                    this.trace('info',`Certification ${certification.id}: ${submitted.length} decision(s) applied`)
+                    this.trace('info', `Certification ${certification.id}: ${submitted.length} decision(s) applied`)
                 }
 
                 certifications.push({
@@ -1328,7 +1080,8 @@ export class MyClient {
                 submittedDecisions.push(...submitted)
             } catch (error) {
                 const description = describeApiError(error)
-                this.trace('error',
+                this.trace(
+                    'error',
                     `Certification ${certification.id} could not be processed, skipping it: ${description}`
                 )
                 certifications.push({
@@ -1345,23 +1098,16 @@ export class MyClient {
         const totals: PreApprovalTotals = {
             itemsProcessed,
             approvedFromPreviousCampaign: submittedDecisions.filter(
-                (decision) =>
-                    decision.reason === 'PREVIOUSLY_APPROVED' && decision.previousSource !== 'MOBILITY_MINI'
+                (decision) => decision.reason === 'PREVIOUSLY_APPROVED'
             ).length,
-            approvedAsMandatory: submittedDecisions.filter(
-                (decision) => decision.reason === 'IRREVOCABLE_ROLE'
-            ).length,
-            approvedFromMobilityMiniCampaign: submittedDecisions.filter(
-                (decision) =>
-                    decision.reason === 'PREVIOUSLY_APPROVED' && decision.previousSource === 'MOBILITY_MINI'
-            ).length,
-            approvedFromAiRecommendation: submittedDecisions.filter(
-                (decision) => decision.reason === 'AI_RECOMMENDED'
-            ).length,
+            approvedAsIrrevocableRole: submittedDecisions.filter((decision) => decision.reason === 'IRREVOCABLE_ROLE')
+                .length,
+            approvedFromAiRecommendation: submittedDecisions.filter((decision) => decision.reason === 'AI_RECOMMENDED')
+                .length,
         }
 
         logger.info(
-            `Campaign ${campaignId}: ${totals.itemsProcessed} item(s) processed, ${totals.approvedAsMandatory} approved as mandatory, ${totals.approvedFromPreviousCampaign} approved from a previous campaign, ${totals.approvedFromMobilityMiniCampaign} approved from a mobility mini-campaign, ${totals.approvedFromAiRecommendation} approved from AI recommendation`
+            `Campaign ${campaignId}: ${totals.itemsProcessed} item(s) processed, ${totals.approvedAsIrrevocableRole} irrevocable role(s) approved, ${totals.approvedFromPreviousCampaign} approved from a previous campaign, ${totals.approvedFromAiRecommendation} approved from AI recommendation`
         )
 
         if (!this.debug) {
@@ -1371,7 +1117,8 @@ export class MyClient {
         const totalSubmitted = certifications.reduce((total, entry) => total + entry.submitted, 0)
         const totalFailed = certifications.reduce((total, entry) => total + entry.errors.length, 0)
         const skipped = certifications.filter((entry) => entry.skippedBecause).length
-        this.trace('info',
+        this.trace(
+            'info',
             `Campaign ${campaignId}: pre-approval done, ${totalSubmitted} decision(s) submitted, ${totalFailed} refused and ${skipped} certification(s) skipped on error, across ${certifications.length} certification(s)`
         )
 

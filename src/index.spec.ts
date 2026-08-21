@@ -15,13 +15,10 @@ const mockConfig: any = {
     baseurl: 'https://example.api.identitynow.com',
     clientId: 'test-client-id',
     clientSecret: 'test-client-secret',
-    populationIdentityAttribute: 'population',
-    employeePopulationValues: ['employé', 'employee'],
-    contractorPopulationValues: ['prestataire', 'contractor'],
-    employeeMaxPreviousCertificationAgeMonths: 12,
-    employeeMobilityIdentityAttributes: ['department', 'manager'],
-    contractorMaxPreviousCertificationAgeMonths: 24,
-    contractorMobilityIdentityAttributes: [],
+    autoApproveIrrevocableRoles: true,
+    autoApprovePreviouslyApprovedAccess: true,
+    maxPreviousCertificationAgeMonths: 12,
+    autoApproveAiRecommendedAccess: false,
     debug: false,
 }
 process.env.CONNECTOR_CONFIG = Buffer.from(JSON.stringify(mockConfig)).toString('base64')

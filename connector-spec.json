@@ -34,120 +34,78 @@
                 },
                 {
                     "type": "section",
-                    "sectionTitle": "Journalisation",
-                    "sectionHelpMessage": "Contrôle le volume de traces renvoyé dans la sortie de la commande.",
+                    "sectionTitle": "Logging",
+                    "sectionHelpMessage": "Control the amount of execution detail returned by the command.",
                     "items": [
                         {
                             "key": "debug",
-                            "label": "Activer le mode debug",
+                            "label": "Enable debug mode",
                             "type": "checkbox",
                             "required": false,
-                            "helpMessage": "Si activé, tous les logs détaillés sont écrits et renvoyés dans la sortie. Sinon, seuls les totaux finaux sont renvoyés."
+                            "helpMessage": "When enabled, detailed logs are written to a CSV file and execution details are returned. Otherwise, only final totals are returned."
                         }
                     ]
                 },
                 {
                     "type": "section",
-                    "sectionTitle": "Populations",
-                    "sectionHelpMessage": "Indiquez l'attribut d'identité qui porte la population, puis les valeurs qui correspondent à chaque population gérée.",
+                    "sectionTitle": "Business rules",
+                    "sectionHelpMessage": "Choose which business rules may automatically approve certification items.",
                     "items": [
                         {
-                            "key": "populationIdentityAttribute",
-                            "label": "Attribut d'identité de population",
-                            "type": "text",
-                            "required": true,
-                            "helpMessage": "Nom technique de l'attribut d'identité ISC dans lequel est stockée la population (exemple: employeeType, population)."
-                        },
-                        {
-                            "key": "employeePopulationValues",
-                            "label": "Valeurs de l'attribut pour les employés",
-                            "type": "list",
-                            "required": true,
-                            "helpMessage": "Toutes les valeurs possibles de cet attribut qui identifient un employé. La comparaison ignore la casse et les accents."
-                        },
-                        {
-                            "key": "contractorPopulationValues",
-                            "label": "Valeurs de l'attribut pour les prestataires",
-                            "type": "list",
-                            "required": true,
-                            "helpMessage": "Toutes les valeurs possibles de cet attribut qui identifient un prestataire. La comparaison ignore la casse et les accents."
-                        }
-                    ]
-                },
-                {
-                    "type": "section",
-                    "sectionTitle": "Critères employés",
-                    "sectionHelpMessage": "Ancienneté et attributs de mobilité appliqués aux identités reconnues comme employés.",
-                    "items": [
-                        {
-                            "key": "employeeMaxPreviousCertificationAgeMonths",
-                            "label": "Ancienneté maximale de la dernière certification (mois)",
-                            "type": "number",
-                            "required": true,
-                            "helpMessage": "Les droits d'un employé sont revalidés si sa dernière certification est plus ancienne que cette valeur."
-                        },
-                        {
-                            "key": "employeeMobilityIdentityAttributes",
-                            "label": "Attributs de mobilité",
-                            "type": "list",
-                            "required": false,
-                            "helpMessage": "Attributs d'identité dont la modification après la dernière certification empêche la pré-validation historique."
-                        }
-                    ]
-                },
-                {
-                    "type": "section",
-                    "sectionTitle": "Critères prestataires",
-                    "sectionHelpMessage": "Ancienneté et attributs de mobilité appliqués aux identités reconnues comme prestataires.",
-                    "items": [
-                        {
-                            "key": "contractorMaxPreviousCertificationAgeMonths",
-                            "label": "Ancienneté maximale de la dernière certification (mois)",
-                            "type": "number",
-                            "required": true,
-                            "helpMessage": "Les droits d'un prestataire sont revalidés si sa dernière certification est plus ancienne que cette valeur."
-                        },
-                        {
-                            "key": "contractorMobilityIdentityAttributes",
-                            "label": "Attributs de mobilité",
-                            "type": "list",
-                            "required": false,
-                            "helpMessage": "Laisser vide si la mobilité ne s'applique pas à cette population."
-                        }
-                    ]
-                },
-                {
-                    "type": "section",
-                    "sectionTitle": "Recommandations AI",
-                    "sectionHelpMessage": "Complète et filtre les règles métier avec le moteur de recommandations ISC.",
-                    "items": [
-                        {
-                            "key": "enableAiRecommendations",
-                            "label": "Activer les recommandations AI",
+                            "key": "autoApproveIrrevocableRoles",
+                            "label": "Auto-approve non-revocable roles",
                             "type": "checkbox",
                             "required": false,
-                            "helpMessage": "YES peut pré-valider un accès sans règle métier. NO bloque une pré-validation métier sauf si les règles métier priment. MAYBE/NOT_FOUND/absence laisse les règles métier s'appliquer."
+                            "helpMessage": "Automatically approves pending role items when the role is marked as non-revocable."
+                        },
+                        {
+                            "key": "autoApprovePreviouslyApprovedAccess",
+                            "label": "Auto-approve access approved in a previous certification",
+                            "type": "checkbox",
+                            "required": false,
+                            "helpMessage": "Automatically approves recertified access when the same access was approved in the identity's latest signed certification and that certification is within the configured age window."
+                        },
+                        {
+                            "key": "maxPreviousCertificationAgeMonths",
+                            "label": "Maximum previous certification age (months)",
+                            "type": "number",
+                            "required": true,
+                            "helpMessage": "Maximum age of the latest signed certification used by the previous-approval rule."
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "sectionTitle": "AI recommendations",
+                    "sectionHelpMessage": "Configure automatic approval based on SailPoint AI recommendations and its interaction with business rules.",
+                    "items": [
+                        {
+                            "key": "autoApproveAiRecommendedAccess",
+                            "label": "Auto-approve AI-recommended access",
+                            "type": "checkbox",
+                            "required": false,
+                            "helpMessage": "A YES recommendation may automatically approve an access. A NO recommendation blocks a business-rule approval unless business rules are configured to override it. MAYBE, NOT_FOUND, or no recommendation leaves business rules unchanged."
                         },
                         {
                             "key": "businessRulesOverrideAiNo",
-                            "label": "Les règles métier priment sur une recommandation NO",
+                            "label": "Allow business rules to override an AI NO",
                             "type": "checkbox",
                             "required": false,
-                            "helpMessage": "Désactivé par défaut. Si activé, un accès couvert par une règle métier (matrice, campagne précédente, mini-certification) est pré-validé même si le moteur AI répond NO."
+                            "helpMessage": "When enabled, an item selected by an active business rule is approved even when SailPoint AI recommends NO."
                         },
                         {
                             "key": "approveAiRecommendedPreviouslyRevoked",
-                            "label": "Autoriser un accès recommandé mais précédemment révoqué",
+                            "label": "Allow AI approval of previously revoked access",
                             "type": "checkbox",
                             "required": false,
-                            "helpMessage": "Désactivé par défaut. Si activé, un YES du moteur AI peut pré-valider un accès révoqué lors de la dernière certification signée."
+                            "helpMessage": "When enabled, a YES recommendation may approve access that was revoked in the identity's latest signed certification."
                         },
                         {
                             "key": "aiRecommendationBatchSize",
-                            "label": "Taille des lots de recommandations AI",
+                            "label": "AI recommendation batch size",
                             "type": "number",
                             "required": true,
-                            "helpMessage": "Nombre de couples identité/accès envoyés par appel au moteur de recommandations."
+                            "helpMessage": "Number of identity/access pairs sent in each recommendation API request."
                         }
                     ]
                 }
@@ -156,14 +114,10 @@
     ],
     "sourceConfigInitialValues": {
         "debug": false,
-        "populationIdentityAttribute": "population",
-        "employeePopulationValues": ["employé", "employee"],
-        "contractorPopulationValues": ["prestataire", "contractor"],
-        "employeeMaxPreviousCertificationAgeMonths": 12,
-        "employeeMobilityIdentityAttributes": [],
-        "contractorMaxPreviousCertificationAgeMonths": 12,
-        "contractorMobilityIdentityAttributes": [],
-        "enableAiRecommendations": false,
+        "autoApproveIrrevocableRoles": true,
+        "autoApprovePreviouslyApprovedAccess": true,
+        "maxPreviousCertificationAgeMonths": 12,
+        "autoApproveAiRecommendedAccess": false,
         "businessRulesOverrideAiNo": false,
         "approveAiRecommendedPreviouslyRevoked": false,
         "aiRecommendationBatchSize": 50

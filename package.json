@@ -1,54 +1,54 @@
 {
-  "name": "cert-items-automatic-approval-axa",
-  "version": "0.1.0",
-  "main": "dist/index.js",
-  "scripts": {
-    "clean": "shx rm -rf ./dist",
-    "prebuild": "npm run clean",
-    "build": "npx ncc build ./src/index.ts -o ./dist -m -C",
-    "dev": "cross-env NODE_OPTIONS=--enable-source-maps spcx run dist/index.js",
-    "debug": "spcx run dist/index.js",
-    "prettier": "npx prettier --write .",
-    "test": "jest --coverage",
-    "prepack-zip": "npm ci && npm run build",
-    "pack-zip": "spcx package"
-  },
-  "private": true,
-  "dependencies": {
-    "@sailpoint/connector-sdk": "^1.0.0",
-    "sailpoint-api-client": "^2.1.23"
-  },
-  "devDependencies": {
-    "@types/jest": "^30.0.0",
-    "@types/mocha": "^10.0.10",
-    "@types/node": "^26.2.0",
-    "@vercel/ncc": "^0.38.1",
-    "cross-env": "7.0.3",
-    "jest": "^30.4.2",
-    "prettier": "^2.3.2",
-    "shx": "^0.3.3",
-    "ts-jest": "^29.4.12",
-    "typescript": "^5.9.3"
-  },
-  "jest": {
-    "preset": "ts-jest",
-    "testEnvironment": "node",
-    "clearMocks": true,
-    "collectCoverage": true,
-    "coverageThreshold": {
-      "global": {
-        "statements": 35,
-        "branches": 30,
-        "functions": 30,
-        "lines": 35
-      }
+    "name": "cert-items-automatic-approval",
+    "version": "0.1.0",
+    "main": "dist/index.js",
+    "scripts": {
+        "clean": "shx rm -rf ./dist",
+        "prebuild": "npm run clean",
+        "build": "npx ncc build ./src/index.ts -o ./dist -m -C",
+        "dev": "cross-env NODE_OPTIONS=--enable-source-maps spcx run dist/index.js",
+        "debug": "spcx run dist/index.js",
+        "prettier": "npx prettier --write .",
+        "test": "jest --coverage",
+        "prepack-zip": "npm ci && npm run build",
+        "pack-zip": "spcx package"
+    },
+    "private": true,
+    "dependencies": {
+        "@sailpoint/connector-sdk": "^1.0.0",
+        "sailpoint-api-client": "^2.1.23"
+    },
+    "devDependencies": {
+        "@types/jest": "^30.0.0",
+        "@types/mocha": "^10.0.10",
+        "@types/node": "^26.2.0",
+        "@vercel/ncc": "^0.38.1",
+        "cross-env": "7.0.3",
+        "jest": "^30.4.2",
+        "prettier": "^2.3.2",
+        "shx": "^0.3.3",
+        "ts-jest": "^29.4.12",
+        "typescript": "^5.9.3"
+    },
+    "jest": {
+        "preset": "ts-jest",
+        "testEnvironment": "node",
+        "clearMocks": true,
+        "collectCoverage": true,
+        "coverageThreshold": {
+            "global": {
+                "statements": 35,
+                "branches": 30,
+                "functions": 30,
+                "lines": 35
+            }
+        }
+    },
+    "prettier": {
+        "printWidth": 120,
+        "trailingComma": "es5",
+        "tabWidth": 4,
+        "semi": false,
+        "singleQuote": true
     }
-  },
-  "prettier": {
-    "printWidth": 120,
-    "trailingComma": "es5",
-    "tabWidth": 4,
-    "semi": false,
-    "singleQuote": true
-  }
 }

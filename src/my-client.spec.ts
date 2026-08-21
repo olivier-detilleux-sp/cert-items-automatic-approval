@@ -7,25 +7,15 @@ const mockConfig: any = {
     clientId: 'test-client-id',
     clientSecret: 'test-client-secret',
     accessToken: 'xxx123',
-    populationIdentityAttribute: 'population',
-    employeePopulationValues: ['employé', 'employee'],
-    contractorPopulationValues: ['prestataire', 'contractor'],
-    employeeMaxPreviousCertificationAgeMonths: 12,
-    employeeMobilityIdentityAttributes: ['department', 'manager'],
-    contractorMaxPreviousCertificationAgeMonths: 24,
-    contractorMobilityIdentityAttributes: [],
+    autoApproveIrrevocableRoles: true,
+    autoApprovePreviouslyApprovedAccess: true,
+    maxPreviousCertificationAgeMonths: 12,
+    autoApproveAiRecommendedAccess: false,
     debug: true,
 }
 
 function createClient(): MyClient {
-    const client = new MyClient(mockConfig)
-    jest.spyOn(client as any, 'getPopulationConfig').mockResolvedValue({
-        population: 'EMPLOYEE',
-        maxPreviousCertificationAgeMonths: 12,
-        mobilityIdentityAttributes: new Set(['department', 'manager']),
-    })
-    jest.spyOn(client as any, 'getCertificationCampaignName').mockResolvedValue('Annual campaign')
-    return client
+    return new MyClient(mockConfig)
 }
 
 describe('connector client unit tests', () => {
@@ -33,7 +23,7 @@ describe('connector client unit tests', () => {
         expect(() => new MyClient({})).toThrow(ConnectorError)
     })
 
-    it('uses a recent previous certification when no mobility occurred', async () => {
+    it('uses a recent previous certification', async () => {
         const myClient = createClient()
         const signedDate = new Date()
         signedDate.setUTCMonth(signedDate.getUTCMonth() - 1)
@@ -75,80 +65,6 @@ describe('connector client unit tests', () => {
         })
     })
 
-    it('rejects a previous certification after a configured mobility attribute changed', async () => {
-        const myClient = createClient()
-        const signedDate = new Date()
-        signedDate.setUTCMonth(signedDate.getUTCMonth() - 1)
-        const mobilityDate = new Date(signedDate)
-        mobilityDate.setUTCDate(mobilityDate.getUTCDate() + 1)
-
-        jest.spyOn(myClient as any, 'getIdentityHistoryEvents').mockResolvedValue([
-            {
-                eventType: 'IdentityCertified',
-                certificationId: 'previous-certification',
-                signedDate: signedDate.toISOString(),
-            },
-            {
-                eventType: 'AttributesChanged',
-                dateTime: mobilityDate.toISOString(),
-                attributeChanges: [
-                    {
-                        name: 'department',
-                        previousValue: 'Sales',
-                        newValue: 'Finance',
-                    },
-                ],
-            },
-        ])
-
-        await expect(
-            (myClient as any).getPreviousCertificationForIdentity('identity-1', new Set())
-        ).resolves.toMatchObject({
-            eligible: false,
-            certification: { id: 'previous-certification' },
-        })
-    })
-
-    it('uses a mobility mini-certification when no later mobility occurred', async () => {
-        const myClient = createClient()
-        const mobilityDate = new Date()
-        mobilityDate.setUTCMonth(mobilityDate.getUTCMonth() - 2)
-        const signedDate = new Date(mobilityDate)
-        signedDate.setUTCDate(signedDate.getUTCDate() + 2)
-
-        ;(myClient as any).getCertificationCampaignName.mockResolvedValue(
-            'Mini Certification Mobilité: changement unité'
-        )
-        jest.spyOn(myClient as any, 'getIdentityHistoryEvents').mockResolvedValue([
-            {
-                eventType: 'AttributesChanged',
-                dateTime: mobilityDate.toISOString(),
-                attributeChanges: [
-                    { name: 'department', previousValue: 'Sales', newValue: 'Finance' },
-                ],
-            },
-            {
-                eventType: 'IdentityCertified',
-                certificationId: 'mobility-certification',
-                signedDate: signedDate.toISOString(),
-            },
-        ])
-
-        const result = await (myClient as any).getPreviousCertificationForIdentity(
-            'identity-1',
-            new Set()
-        )
-
-        expect(result).toMatchObject({
-            eligible: true,
-            certification: {
-                id: 'mobility-certification',
-                source: 'MOBILITY_MINI',
-            },
-        })
-        expect(result.certification.mobilityAt.toISOString()).toBe(mobilityDate.toISOString())
-    })
-
     it('resolves the access id from the type specific summary when access is not filled', () => {
         const myClient = createClient()
         const previousApprovedAccess = new Map([
@@ -186,34 +102,82 @@ describe('connector client unit tests', () => {
         })
     })
 
+    it('can disable the irrevocable-role rule', () => {
+        const myClient = new MyClient({ ...mockConfig, autoApproveIrrevocableRoles: false })
+        const candidates = (myClient as any).evaluateItems(
+            'current-certification',
+            [
+                {
+                    id: 'irrevocable-role',
+                    identitySummary: { identityId: 'identity-1' },
+                    accessSummary: {
+                        access: { type: 'ROLE', id: 'role-1', name: 'Role 1' },
+                        role: { revocable: false },
+                    },
+                },
+            ],
+            new Map()
+        )
+
+        expect(candidates).toEqual([])
+    })
+
+    it('can disable the previous-certification rule', () => {
+        const myClient = new MyClient({
+            ...mockConfig,
+            autoApprovePreviouslyApprovedAccess: false,
+        })
+        const candidates = (myClient as any).evaluateItems(
+            'current-certification',
+            [
+                {
+                    id: 'access-1',
+                    newAccess: false,
+                    identitySummary: { identityId: 'identity-1' },
+                    accessSummary: {
+                        access: { type: 'ENTITLEMENT', id: 'access-1', name: 'Access 1' },
+                    },
+                },
+            ],
+            new Map([
+                [
+                    'identity-1',
+                    {
+                        certificationId: 'previous-certification',
+                        signedAt: new Date(),
+                        keys: new Set(['ENTITLEMENT:access-1']),
+                    },
+                ],
+            ])
+        )
+
+        expect(candidates).toEqual([])
+    })
+
     it('reads the previous certification once to know both approved and revoked access', async () => {
         const myClient = createClient()
         const signedDate = new Date()
         signedDate.setUTCMonth(signedDate.getUTCMonth() - 1)
 
-        const getHistory = jest
-            .spyOn(myClient as any, 'getIdentityHistoryEvents')
-            .mockResolvedValue([
-                {
-                    eventType: 'IdentityCertified',
-                    certificationId: 'previous-certification',
-                    signedDate: signedDate.toISOString(),
-                },
-            ])
-        const getItems = jest
-            .spyOn(myClient as any, 'getCertificationItemsByCertificationId')
-            .mockResolvedValue([
-                {
-                    identitySummary: { identityId: 'identity-1' },
-                    decision: 'APPROVE',
-                    accessSummary: { access: { type: 'ENTITLEMENT', id: 'kept-access' } },
-                },
-                {
-                    identitySummary: { identityId: 'identity-1' },
-                    decision: 'REVOKE',
-                    accessSummary: { access: { type: 'ENTITLEMENT', id: 'revoked-access' } },
-                },
-            ])
+        const getHistory = jest.spyOn(myClient as any, 'getIdentityHistoryEvents').mockResolvedValue([
+            {
+                eventType: 'IdentityCertified',
+                certificationId: 'previous-certification',
+                signedDate: signedDate.toISOString(),
+            },
+        ])
+        const getItems = jest.spyOn(myClient as any, 'getCertificationItemsByCertificationId').mockResolvedValue([
+            {
+                identitySummary: { identityId: 'identity-1' },
+                decision: 'APPROVE',
+                accessSummary: { access: { type: 'ENTITLEMENT', id: 'kept-access' } },
+            },
+            {
+                identitySummary: { identityId: 'identity-1' },
+                decision: 'REVOKE',
+                accessSummary: { access: { type: 'ENTITLEMENT', id: 'revoked-access' } },
+            },
+        ])
 
         const result = await (myClient as any).getPreviousCertificationDecisionsByIdentity(
             new Set(['identity-1']),
@@ -228,9 +192,7 @@ describe('connector client unit tests', () => {
 
     it('does not search again when the identity has no previous certification', async () => {
         const myClient = createClient()
-        const getHistory = jest
-            .spyOn(myClient as any, 'getIdentityHistoryEvents')
-            .mockResolvedValue([])
+        const getHistory = jest.spyOn(myClient as any, 'getIdentityHistoryEvents').mockResolvedValue([])
         const getItems = jest.spyOn(myClient as any, 'getCertificationItemsByCertificationId')
 
         const result = await (myClient as any).getPreviousCertificationDecisionsByIdentity(
@@ -271,42 +233,6 @@ describe('connector client unit tests', () => {
 
         expect(result.approved.size).toBe(0)
         expect([...result.revoked.get('identity-1')]).toEqual(['ENTITLEMENT:revoked-access'])
-    })
-
-    it('mentions the mobility date in decisions based on a mini-certification', () => {
-        const myClient = createClient()
-        const mobilityAt = new Date('2026-03-15T10:00:00.000Z')
-        const previousApprovedAccess = new Map([
-            [
-                'identity-1',
-                {
-                    certificationId: 'mobility-certification',
-                    signedAt: new Date('2026-03-17T10:00:00.000Z'),
-                    source: 'MOBILITY_MINI',
-                    mobilityAt,
-                    keys: new Set(['ENTITLEMENT:access-1']),
-                },
-            ],
-        ])
-
-        const candidates = (myClient as any).evaluateItems(
-            'current-certification',
-            [
-                {
-                    id: 'item-1',
-                    newAccess: false,
-                    identitySummary: { identityId: 'identity-1' },
-                    accessSummary: {
-                        access: { type: 'ENTITLEMENT', id: 'access-1', name: 'Access 1' },
-                    },
-                },
-            ],
-            previousApprovedAccess
-        )
-
-        expect(candidates[0].comments).toBe(
-            'Pré-validation car déjà approuvé lors de la mini certification liée à la mobilité du 15/03/2026'
-        )
     })
 
     it('does not pre-approve recertified access that was revoked in the last campaign even if it looks like existing access', () => {
@@ -391,7 +317,7 @@ describe('connector client unit tests', () => {
             itemId: 'new-ai-access',
             reason: 'AI_RECOMMENDED',
         })
-        expect(candidates[0].comments).toContain('moteur AI de SailPoint')
+        expect(candidates[0].comments).toContain('SailPoint AI')
     })
 
     it('applies a business rule despite AI NO when businessRulesOverrideAiNo is enabled', () => {
@@ -454,6 +380,9 @@ describe('connector client unit tests', () => {
         )
 
         expect(candidates[0].reason).toBe('IRREVOCABLE_ROLE')
+        expect(candidates[0].comments).toBe(
+            'Automatically approved because this is a birthright / mandatory role and can only be acknowledged'
+        )
     })
 
     it('does not approve AI recommended access revoked in the last certification by default', () => {
@@ -501,23 +430,26 @@ describe('connector client unit tests', () => {
         )
 
         expect(candidates[0].reason).toBe('AI_RECOMMENDED')
-        expect(candidates[0].comments).toContain('malgré une révocation')
+        expect(candidates[0].comments).toContain('despite being revoked')
     })
 
     it('deduplicates and batches AI recommendation requests', async () => {
         const getRecommendations = jest
             .spyOn(IAIRecommendationsApi.prototype, 'getRecommendationsV1')
-            .mockImplementation(async ({ recommendationRequestDto }: any) => ({
-                data: {
-                    response: recommendationRequestDto.requests.map((request: any) => ({
-                        request,
-                        recommendation: 'YES',
-                    })),
-                },
-            }) as any)
+            .mockImplementation(
+                async ({ recommendationRequestDto }: any) =>
+                    ({
+                        data: {
+                            response: recommendationRequestDto.requests.map((request: any) => ({
+                                request,
+                                recommendation: 'YES',
+                            })),
+                        },
+                    } as any)
+            )
         const myClient = new MyClient({
             ...mockConfig,
-            enableAiRecommendations: true,
+            autoApproveAiRecommendedAccess: true,
             aiRecommendationBatchSize: 2,
         })
         const item = (id: string, accessId: string) => ({
@@ -544,18 +476,21 @@ describe('connector client unit tests', () => {
     it('reads the recommendations from the responses field returned by ISC', async () => {
         const getRecommendations = jest
             .spyOn(IAIRecommendationsApi.prototype, 'getRecommendationsV1')
-            .mockImplementation(async ({ recommendationRequestDto }: any) => ({
-                data: {
-                    responses: recommendationRequestDto.requests.map((request: any) => ({
-                        request,
-                        recommendation: 'YES',
-                        interpretations: [],
-                        translationMessages: [],
-                        recommenderCalculations: null,
-                    })),
-                },
-            }) as any)
-        const myClient = new MyClient({ ...mockConfig, enableAiRecommendations: true })
+            .mockImplementation(
+                async ({ recommendationRequestDto }: any) =>
+                    ({
+                        data: {
+                            responses: recommendationRequestDto.requests.map((request: any) => ({
+                                request,
+                                recommendation: 'YES',
+                                interpretations: [],
+                                translationMessages: [],
+                                recommenderCalculations: null,
+                            })),
+                        },
+                    } as any)
+            )
+        const myClient = new MyClient({ ...mockConfig, autoApproveAiRecommendedAccess: true })
 
         const result = await (myClient as any).getAiRecommendations([
             {
@@ -574,14 +509,17 @@ describe('connector client unit tests', () => {
     it('maps recommendations by request order when the API does not echo the request', async () => {
         const getRecommendations = jest
             .spyOn(IAIRecommendationsApi.prototype, 'getRecommendationsV1')
-            .mockImplementation(async ({ recommendationRequestDto }: any) => ({
-                data: {
-                    response: recommendationRequestDto.requests.map((_: unknown, index: number) => ({
-                        recommendation: index === 0 ? 'YES' : 'NO',
-                    })),
-                },
-            }) as any)
-        const myClient = new MyClient({ ...mockConfig, enableAiRecommendations: true })
+            .mockImplementation(
+                async ({ recommendationRequestDto }: any) =>
+                    ({
+                        data: {
+                            response: recommendationRequestDto.requests.map((_: unknown, index: number) => ({
+                                recommendation: index === 0 ? 'YES' : 'NO',
+                            })),
+                        },
+                    } as any)
+            )
+        const myClient = new MyClient({ ...mockConfig, autoApproveAiRecommendedAccess: true })
         const item = (id: string, accessId: string) => ({
             id,
             identitySummary: { identityId: 'identity-1' },
@@ -606,7 +544,7 @@ describe('connector client unit tests', () => {
             .mockResolvedValue({
                 data: { response: [{ recommendation: 'YES' }] },
             } as any)
-        const myClient = new MyClient({ ...mockConfig, enableAiRecommendations: true })
+        const myClient = new MyClient({ ...mockConfig, autoApproveAiRecommendedAccess: true })
         const item = (id: string, accessId: string) => ({
             id,
             identitySummary: { identityId: 'identity-1' },
@@ -639,8 +577,20 @@ describe('connector client unit tests', () => {
         jest.spyOn(myClient as any, 'getApi').mockReturnValue({ makeIdentityDecisionV1 })
 
         const candidates = [
-            { itemId: 'item-ok', identityId: 'identity-1', decision: 'APPROVE', comments: '', reason: 'IRREVOCABLE_ROLE' },
-            { itemId: forbiddenItem, identityId: 'identity-2', decision: 'APPROVE', comments: '', reason: 'IRREVOCABLE_ROLE' },
+            {
+                itemId: 'item-ok',
+                identityId: 'identity-1',
+                decision: 'APPROVE',
+                comments: '',
+                reason: 'IRREVOCABLE_ROLE',
+            },
+            {
+                itemId: forbiddenItem,
+                identityId: 'identity-2',
+                decision: 'APPROVE',
+                comments: '',
+                reason: 'IRREVOCABLE_ROLE',
+            },
         ]
 
         const result = await (myClient as any).submitDecisions('certification-1', candidates)
@@ -681,8 +631,7 @@ describe('connector client unit tests', () => {
         expect(result.totals).toMatchObject({
             itemsProcessed: 0,
             approvedFromPreviousCampaign: 0,
-            approvedAsMandatory: 0,
-            approvedFromMobilityMiniCampaign: 0,
+            approvedAsIrrevocableRole: 0,
         })
     })
 
