@@ -1,0 +1,193 @@
+{
+    "name": "cert-items-automatic-approval",
+    "commands": ["campaign:pre-approve"],
+    "sourceConfig": [
+        {
+            "type": "menu",
+            "label": "Configuration",
+            "items": [
+                {
+                    "type": "section",
+                    "sectionTitle": "Authentication",
+                    "sectionHelpMessage": "Provide a Personal Access Token and the ISC API base URL used to authenticate to Identity Security Cloud.",
+                    "items": [
+                        {
+                            "key": "baseurl",
+                            "label": "API Base URL",
+                            "type": "text",
+                            "required": true,
+                            "helpMessage": "Example: https://{tenant}.api.identitynow.com"
+                        },
+                        {
+                            "key": "clientId",
+                            "label": "Client ID",
+                            "type": "text",
+                            "required": true
+                        },
+                        {
+                            "key": "clientSecret",
+                            "label": "Client Secret",
+                            "type": "secret",
+                            "required": true
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "sectionTitle": "Journalisation",
+                    "sectionHelpMessage": "Contrôle le volume de traces renvoyé dans la sortie de la commande.",
+                    "items": [
+                        {
+                            "key": "debug",
+                            "label": "Activer le mode debug",
+                            "type": "checkbox",
+                            "required": false,
+                            "helpMessage": "Si activé, tous les logs détaillés sont écrits et renvoyés dans la sortie. Sinon, seuls les totaux finaux sont renvoyés."
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "sectionTitle": "Populations",
+                    "sectionHelpMessage": "Indiquez l'attribut d'identité qui porte la population, puis les valeurs qui correspondent à chaque population gérée.",
+                    "items": [
+                        {
+                            "key": "populationIdentityAttribute",
+                            "label": "Attribut d'identité de population",
+                            "type": "text",
+                            "required": true,
+                            "helpMessage": "Nom technique de l'attribut d'identité ISC dans lequel est stockée la population (exemple: employeeType, population)."
+                        },
+                        {
+                            "key": "employeePopulationValues",
+                            "label": "Valeurs de l'attribut pour les employés",
+                            "type": "list",
+                            "required": true,
+                            "helpMessage": "Toutes les valeurs possibles de cet attribut qui identifient un employé. La comparaison ignore la casse et les accents."
+                        },
+                        {
+                            "key": "contractorPopulationValues",
+                            "label": "Valeurs de l'attribut pour les prestataires",
+                            "type": "list",
+                            "required": true,
+                            "helpMessage": "Toutes les valeurs possibles de cet attribut qui identifient un prestataire. La comparaison ignore la casse et les accents."
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "sectionTitle": "Critères employés",
+                    "sectionHelpMessage": "Ancienneté et attributs de mobilité appliqués aux identités reconnues comme employés.",
+                    "items": [
+                        {
+                            "key": "employeeMaxPreviousCertificationAgeMonths",
+                            "label": "Ancienneté maximale de la dernière certification (mois)",
+                            "type": "number",
+                            "required": true,
+                            "helpMessage": "Les droits d'un employé sont revalidés si sa dernière certification est plus ancienne que cette valeur."
+                        },
+                        {
+                            "key": "employeeMobilityIdentityAttributes",
+                            "label": "Attributs de mobilité",
+                            "type": "list",
+                            "required": false,
+                            "helpMessage": "Attributs d'identité dont la modification après la dernière certification empêche la pré-validation historique."
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "sectionTitle": "Critères prestataires",
+                    "sectionHelpMessage": "Ancienneté et attributs de mobilité appliqués aux identités reconnues comme prestataires.",
+                    "items": [
+                        {
+                            "key": "contractorMaxPreviousCertificationAgeMonths",
+                            "label": "Ancienneté maximale de la dernière certification (mois)",
+                            "type": "number",
+                            "required": true,
+                            "helpMessage": "Les droits d'un prestataire sont revalidés si sa dernière certification est plus ancienne que cette valeur."
+                        },
+                        {
+                            "key": "contractorMobilityIdentityAttributes",
+                            "label": "Attributs de mobilité",
+                            "type": "list",
+                            "required": false,
+                            "helpMessage": "Laisser vide si la mobilité ne s'applique pas à cette population."
+                        }
+                    ]
+                },
+                {
+                    "type": "section",
+                    "sectionTitle": "Recommandations AI",
+                    "sectionHelpMessage": "Complète et filtre les règles métier avec le moteur de recommandations ISC.",
+                    "items": [
+                        {
+                            "key": "enableAiRecommendations",
+                            "label": "Activer les recommandations AI",
+                            "type": "checkbox",
+                            "required": false,
+                            "helpMessage": "YES peut pré-valider un accès sans règle métier. NO bloque une pré-validation métier sauf si les règles métier priment. MAYBE/NOT_FOUND/absence laisse les règles métier s'appliquer."
+                        },
+                        {
+                            "key": "businessRulesOverrideAiNo",
+                            "label": "Les règles métier priment sur une recommandation NO",
+                            "type": "checkbox",
+                            "required": false,
+                            "helpMessage": "Désactivé par défaut. Si activé, un accès couvert par une règle métier (matrice, campagne précédente, mini-certification) est pré-validé même si le moteur AI répond NO."
+                        },
+                        {
+                            "key": "approveAiRecommendedPreviouslyRevoked",
+                            "label": "Autoriser un accès recommandé mais précédemment révoqué",
+                            "type": "checkbox",
+                            "required": false,
+                            "helpMessage": "Désactivé par défaut. Si activé, un YES du moteur AI peut pré-valider un accès révoqué lors de la dernière certification signée."
+                        },
+                        {
+                            "key": "aiRecommendationBatchSize",
+                            "label": "Taille des lots de recommandations AI",
+                            "type": "number",
+                            "required": true,
+                            "helpMessage": "Nombre de couples identité/accès envoyés par appel au moteur de recommandations."
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "sourceConfigInitialValues": {
+        "debug": false,
+        "populationIdentityAttribute": "population",
+        "employeePopulationValues": ["employé", "employee"],
+        "contractorPopulationValues": ["prestataire", "contractor"],
+        "employeeMaxPreviousCertificationAgeMonths": 12,
+        "employeeMobilityIdentityAttributes": [],
+        "contractorMaxPreviousCertificationAgeMonths": 12,
+        "contractorMobilityIdentityAttributes": [],
+        "enableAiRecommendations": false,
+        "businessRulesOverrideAiNo": false,
+        "approveAiRecommendedPreviouslyRevoked": false,
+        "aiRecommendationBatchSize": 50
+    },
+    "accountSchema": {
+        "displayAttribute": "firstName",
+        "identityAttribute": "email",
+        "attributes": [
+            {
+                "name": "firstName",
+                "type": "string",
+                "description": "First name of the account"
+            },
+            {
+                "name": "lastName",
+                "type": "string",
+                "description": "Last name of the account"
+            },
+            {
+                "name": "email",
+                "type": "string",
+                "description": "Email of the account"
+            }
+        ]
+    },
+    "entitlementSchemas": []
+}
