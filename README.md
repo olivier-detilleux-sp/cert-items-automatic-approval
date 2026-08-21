@@ -128,7 +128,7 @@ All comments submitted to ISC are in English:
 
 ## Command input
 
-The command expects a campaign id, not a certification id:
+The command expects a campaign id, not a certification id. For local test, use below input:
 
 ```json
 {
@@ -152,7 +152,31 @@ The command expects a campaign id, not a certification id:
 }
 ```
 
-Custom command invocation does not automatically inject source `connectorAttributes`; include the source configuration in the invoke `config` object.
+For remote execution, custom command invocation does not automatically inject source `connectorAttributes`; include the source configuration in the invoke `config` object.
+
+```json
+{
+    "connectorRef": "<connector-id>",
+    "tag": "latest",
+    "type": "campaign:pre-approve",
+    "input": {
+        "id": "<campaign-id>"
+    },
+    "config": {
+        "baseurl": "https://<tenant>.api.identitynow.com",
+        "clientId": "<client-id>",
+        "clientSecret": "<client-secret>",
+        "debug": false,
+        "autoApproveIrrevocableRoles": true,
+        "autoApprovePreviouslyApprovedAccess": true,
+        "maxPreviousCertificationAgeMonths": 12,
+        "autoApproveAiRecommendedAccess": false,
+        "businessRulesOverrideAiNo": false,
+        "approveAiRecommendedPreviouslyRevoked": false,
+        "aiRecommendationBatchSize": 50
+    }
+}
+```
 
 ## Output
 
