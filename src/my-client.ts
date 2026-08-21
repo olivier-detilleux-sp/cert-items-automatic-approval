@@ -208,6 +208,41 @@ function csvCell(value: string): string {
     return `"${value.replace(/"/g, '""')}"`
 }
 
+function formatProcessingTime(milliseconds: number): string {
+    if (milliseconds < 1000) {
+        return `${milliseconds}ms`
+    }
+    const seconds = milliseconds / 1000
+    if (seconds < 60) {
+        return `${seconds.toFixed(1)}s`
+    }
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = Math.round(seconds % 60)
+    return `${minutes}m ${remainingSeconds}s`
+}
+
+/**
+ * The TypeScript SDK prints `Warning: You are using Experimental APIs` with console.log on every
+ * experimental request. In a remote SaaS connector, stdout is the command protocol: that extra
+ * line breaks the stream and ISC reports "stream client connection is broken".
+ */
+function silenceExperimentalApiStdout(): void {
+    const currentLog = console.log as typeof console.log & { __silencedExperimentalApi?: boolean }
+    if (currentLog.__silencedExperimentalApi) {
+        return
+    }
+    const originalLog = currentLog.bind(console)
+    const silenced = ((...args: unknown[]) => {
+        const text = args.map((arg) => (typeof arg === 'string' ? arg : String(arg))).join(' ')
+        if (text.includes('You are using Experimental APIs')) {
+            return
+        }
+        originalLog(...args)
+    }) as typeof console.log & { __silencedExperimentalApi?: boolean }
+    silenced.__silencedExperimentalApi = true
+    console.log = silenced
+}
+
 const IRREVOCABLE_ROLE_COMMENT =
     'Automatically approved because this is a birthright / mandatory role and can only be acknowledged'
 
@@ -300,6 +335,7 @@ export class MyClient {
         // Mandatory: the SDK throws before sending any request carrying `X-SailPoint-Experimental`
         // (identity history, IAI recommendations) when this flag is not set.
         this.configuration.experimental = true
+        silenceExperimentalApiStdout()
     }
 
     private getApi(): CertificationsApi {
@@ -760,21 +796,25 @@ export class MyClient {
             }
 
             let businessCandidate: CandidateDecision | undefined
-            if (this.autoApproveIrrevocableRoles && isIrrevocableRole(item)) {
-                this.trace(
-                    'info',
-                    `Certification ${certificationId}: acknowledging ${describeItem(item)} for identity ${
-                        getIdentityId(item) ?? 'unknown'
-                    } because the role is not revocable`
-                )
-                businessCandidate = {
-                    itemId: item.id,
-                    identityId: getIdentityId(item),
-                    accessId: getAccessRef(item).id,
-                    accessType: getAccessRef(item).type,
-                    decision: CertificationDecision.Approve,
-                    comments: IRREVOCABLE_ROLE_COMMENT,
-                    reason: 'IRREVOCABLE_ROLE',
+            // A non-revocable role can only ever be acknowledged, so the previous-certification rule
+            // never applies to it: either its own rule approves it, or only AI can.
+            if (isIrrevocableRole(item)) {
+                if (this.autoApproveIrrevocableRoles) {
+                    this.trace(
+                        'info',
+                        `Certification ${certificationId}: acknowledging ${describeItem(item)} for identity ${
+                            getIdentityId(item) ?? 'unknown'
+                        } because the role is a birthright / mandatory role`
+                    )
+                    businessCandidate = {
+                        itemId: item.id,
+                        identityId: getIdentityId(item),
+                        accessId: getAccessRef(item).id,
+                        accessType: getAccessRef(item).type,
+                        decision: CertificationDecision.Approve,
+                        comments: IRREVOCABLE_ROLE_COMMENT,
+                        reason: 'IRREVOCABLE_ROLE',
+                    }
                 }
             } else if (this.autoApprovePreviouslyApprovedAccess && item.newAccess === false) {
                 const identityId = getIdentityId(item)
@@ -960,12 +1000,15 @@ export class MyClient {
     async autoApproveCertificationItemsByCampaignId(campaignId: string): Promise<{
         campaignId: string
         totals: PreApprovalTotals
+        processingTimeMs: number
+        processingTime: string
         submitted?: number
         failed?: number
         loggedEvents?: number
         logCsvPath?: string
         certifications?: CertificationResult[]
     }> {
+        const startedAt = Date.now()
         this.executionLogs = []
         this.certificationItemsCache.clear()
         this.identityHistoryEventsCache.clear()
@@ -985,9 +1028,13 @@ export class MyClient {
             }
             for (const item of items) {
                 allItems.push(item)
+                // Reading the history costs one paginated call per identity, so it is only done for
+                // items a history-based decision can apply to. Non-revocable roles are never among
+                // them: they cannot have been revoked, and only their own rule or AI can approve them.
                 if (
                     item.completed ||
                     item.newAccess !== false ||
+                    isIrrevocableRole(item) ||
                     (!this.autoApprovePreviouslyApprovedAccess && !this.autoApproveAiRecommendedAccess)
                 ) {
                     continue
@@ -1106,12 +1153,15 @@ export class MyClient {
                 .length,
         }
 
+        const processingTimeMs = Date.now() - startedAt
+        const processingTime = formatProcessingTime(processingTimeMs)
+
         logger.info(
-            `Campaign ${campaignId}: ${totals.itemsProcessed} item(s) processed, ${totals.approvedAsIrrevocableRole} irrevocable role(s) approved, ${totals.approvedFromPreviousCampaign} approved from a previous campaign, ${totals.approvedFromAiRecommendation} approved from AI recommendation`
+            `Campaign ${campaignId}: ${totals.itemsProcessed} item(s) processed, ${totals.approvedAsIrrevocableRole} irrevocable role(s) approved, ${totals.approvedFromPreviousCampaign} approved from a previous campaign, ${totals.approvedFromAiRecommendation} approved from AI recommendation, processing time ${processingTime}`
         )
 
         if (!this.debug) {
-            return { campaignId, totals }
+            return { campaignId, totals, processingTimeMs, processingTime }
         }
 
         const totalSubmitted = certifications.reduce((total, entry) => total + entry.submitted, 0)
@@ -1127,6 +1177,8 @@ export class MyClient {
         return {
             campaignId,
             totals,
+            processingTimeMs,
+            processingTime,
             submitted: totalSubmitted,
             failed: totalFailed,
             loggedEvents: this.executionLogs.length,

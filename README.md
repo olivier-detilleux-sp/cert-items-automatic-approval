@@ -33,6 +33,8 @@ Two extra options then apply:
 
 Each rule can be turned off independently. A disabled rule is simply skipped.
 
+A non-revocable role is a special case: since it can only ever be acknowledged, the previous-certification rule never applies to it. If `autoApproveIrrevocableRoles` is off, such a role can only be approved by an AI recommendation. The connector therefore never reads the identity history for those items, which also keeps the run shorter.
+
 ### Examples
 
 These examples assume the usual defaults: both business rules on, AI off, previous certification valid for 12 months.
@@ -85,7 +87,7 @@ When `autoApprovePreviouslyApprovedAccess` is enabled, the connector:
 
 Default: enabled, with a 12-month window.
 
-Only the latest previous signed certification is considered. An access request is not treated as proof of a previous approval.
+Only the latest previous signed certification is considered. An access request is not treated as proof of a previous approval. Non-revocable roles are always out of scope for this rule.
 
 ### AI-recommended access
 
@@ -185,6 +187,8 @@ Without debug:
 ```json
 {
     "campaignId": "2c9180...",
+    "processingTimeMs": 18432,
+    "processingTime": "18.4s",
     "totals": {
         "itemsProcessed": 120,
         "approvedAsIrrevocableRole": 40,
@@ -194,7 +198,7 @@ Without debug:
 }
 ```
 
-Counts include only decisions successfully submitted to ISC.
+Counts include only decisions successfully submitted to ISC. `processingTimeMs` is the total elapsed time of the command; `processingTime` is the same duration in a readable form.
 
 With `debug: true`, the response also includes certification results, submitted and failed counts, the number of logged events, and the CSV log path. Detailed log entries are kept in the CSV and logger output rather than returned inline.
 
@@ -208,7 +212,19 @@ The connector uses:
 
 Identity History and IAI Recommendations are experimental APIs. The connector enables experimental SDK support and sends `X-SailPoint-Experimental: true`.
 
+The TypeScript SDK would otherwise print `Warning: You are using Experimental APIs` to stdout on every such call. Locally that is only noisy. Remotely, stdout is the connector protocol, so those lines can crash the command with `stream client connection is broken`. The connector suppresses that specific SDK warning.
+
 The token needs permission to list and decide certifications, read identity history, and call IAI Recommendations when enabled.
+
+## Troubleshooting
+
+`[ConnectorError] error receiving response from connector: stream client connection is broken` (HTTP 400) means the remote connector process stopped answering. Typical causes:
+
+-   leftover `console.log` / `console.warn` on stdout (including the SDK experimental warning above);
+-   an uncaught exception;
+-   a campaign large enough that the invoke times out before the connector finishes.
+
+Without `debug`, the command response stays small. If the error continues after a rebuild/upload, look at connector runtime logs for the last API call rather than at the invoke payload.
 
 ## Local development
 

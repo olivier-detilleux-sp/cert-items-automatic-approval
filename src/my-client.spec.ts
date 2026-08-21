@@ -23,6 +23,19 @@ describe('connector client unit tests', () => {
         expect(() => new MyClient({})).toThrow(ConnectorError)
     })
 
+    it('does not forward experimental API warnings to stdout', () => {
+        const forwarded: unknown[][] = []
+        console.log = ((...args: unknown[]) => {
+            forwarded.push(args)
+        }) as typeof console.log
+
+        createClient()
+        console.log('Warning: You are using Experimental APIs')
+        console.log('safe message')
+
+        expect(forwarded).toEqual([['safe message']])
+    })
+
     it('uses a recent previous certification', async () => {
         const myClient = createClient()
         const signedDate = new Date()
@@ -117,6 +130,36 @@ describe('connector client unit tests', () => {
                 },
             ],
             new Map()
+        )
+
+        expect(candidates).toEqual([])
+    })
+
+    it('never approves a non-revocable role from a previous certification', () => {
+        const myClient = new MyClient({ ...mockConfig, autoApproveIrrevocableRoles: false })
+        const candidates = (myClient as any).evaluateItems(
+            'current-certification',
+            [
+                {
+                    id: 'irrevocable-role',
+                    newAccess: false,
+                    identitySummary: { identityId: 'identity-1' },
+                    accessSummary: {
+                        access: { type: 'ROLE', id: 'role-1', name: 'Role 1' },
+                        role: { revocable: false },
+                    },
+                },
+            ],
+            new Map([
+                [
+                    'identity-1',
+                    {
+                        certificationId: 'previous-certification',
+                        signedAt: new Date(),
+                        keys: new Set(['ROLE:role-1']),
+                    },
+                ],
+            ])
         )
 
         expect(candidates).toEqual([])
@@ -602,6 +645,43 @@ describe('connector client unit tests', () => {
         expect(result.failed[0].error).toContain('self certification is not allowed')
     })
 
+    it('does not read the history of identities whose recertified items are all birthright roles', async () => {
+        const myClient = new MyClient({ ...mockConfig, autoApproveIrrevocableRoles: false })
+        jest.spyOn(myClient as any, 'getCertificationItemsByCampaignId').mockResolvedValue([
+            {
+                certification: { id: 'certification-1' },
+                items: [
+                    {
+                        id: 'birthright-role',
+                        newAccess: false,
+                        identitySummary: { identityId: 'identity-birthright-only' },
+                        accessSummary: {
+                            access: { type: 'ROLE', id: 'role-1', name: 'Birthright role' },
+                            role: { revocable: false },
+                        },
+                    },
+                    {
+                        id: 'recertified-entitlement',
+                        newAccess: false,
+                        identitySummary: { identityId: 'identity-with-entitlement' },
+                        accessSummary: {
+                            access: { type: 'ENTITLEMENT', id: 'access-1', name: 'Access 1' },
+                        },
+                    },
+                ],
+            },
+        ])
+        const getPreviousDecisions = jest
+            .spyOn(myClient as any, 'getPreviousCertificationDecisionsByIdentity')
+            .mockResolvedValue({ approved: new Map(), revoked: new Map() })
+        jest.spyOn(myClient as any, 'submitDecisions').mockResolvedValue({ submitted: [], failed: [] })
+
+        await myClient.autoApproveCertificationItemsByCampaignId('campaign-1')
+
+        const scannedIdentities = getPreviousDecisions.mock.calls[0][0] as Set<string>
+        expect([...scannedIdentities]).toEqual(['identity-with-entitlement'])
+    })
+
     it('skips a certification that fails and keeps processing the next ones', async () => {
         const myClient = createClient()
 
@@ -633,6 +713,8 @@ describe('connector client unit tests', () => {
             approvedFromPreviousCampaign: 0,
             approvedAsIrrevocableRole: 0,
         })
+        expect(result.processingTimeMs).toBeGreaterThanOrEqual(0)
+        expect(result.processingTime).toEqual(expect.any(String))
     })
 
     it('returns only totals when debug is disabled', async () => {
@@ -649,6 +731,8 @@ describe('connector client unit tests', () => {
         const result = await myClient.autoApproveCertificationItemsByCampaignId('campaign-1')
 
         expect(result.totals.itemsProcessed).toBe(0)
+        expect(result.processingTimeMs).toBeGreaterThanOrEqual(0)
+        expect(result.processingTime).toEqual(expect.any(String))
         expect(result.certifications).toBeUndefined()
         expect(result.loggedEvents).toBeUndefined()
         expect(result.logCsvPath).toBeUndefined()

@@ -25,7 +25,13 @@ export const connector = async () => {
         'campaign:pre-approve',
 
         async (context: Context, input: { id: string }, res: Response<any>) => {
-            res.send(await myClient.autoApproveCertificationItemsByCampaignId(input.id))
+            try {
+                res.send(await myClient.autoApproveCertificationItemsByCampaignId(input.id))
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error)
+                logger.error(`campaign:pre-approve failed for campaign ${input.id}: ${message}`)
+                throw error
+            }
         }
     )
 }
