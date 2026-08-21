@@ -1,4 +1,4 @@
-# cert-items-automatic-approval
+# Certification Items Automatic Approval
 
 SaaS connector for SailPoint Identity Security Cloud (ISC). It pre-approves certification campaign items using independently configurable business rules and SailPoint AI recommendations.
 
